@@ -1,0 +1,12 @@
+[
+  {
+    "name": "erpnext",
+    "url": "https://github.com/frappe/erpnext",
+    "branch": "v16.4.1"
+  },
+  {
+    "name": "hrms",
+    "url": "https://github.com/frappe/hrms",
+    "branch": "v16.2.0"
+  }
+]

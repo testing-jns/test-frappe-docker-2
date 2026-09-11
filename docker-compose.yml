@@ -1,0 +1,99 @@
+# One bench per project. Everything that could collide with another project --
+# compose project name, host ports, volume names -- comes from .env.
+#
+# There is no redis service. The Procfile written by `bench init` already starts
+# redis_cache and redis_queue itself, and `bench start` runs that Procfile.
+# MariaDB is separate because its data must outlive the bench container.
+
+name: ${PROJECT_NAME}
+
+services:
+  bench:
+    build:
+      context: ./docker
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION}
+        NODE_VERSION: ${NODE_VERSION}
+        BENCH_VERSION: ${BENCH_VERSION}
+        UID: ${HOST_UID:-1000}
+        GID: ${HOST_GID:-1000}
+    # The uid is part of the tag: two engineers with different uids must not
+    # silently share an image, or files in the bind mount become uneditable.
+    image: bizops-bench:py${PYTHON_VERSION}-node${NODE_VERSION}-u${HOST_UID:-1000}
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      SITE_NAME: ${SITE_NAME}
+      # Only used to print the correct URL in the bootstrap banner.
+      WEB_PORT: ${WEB_PORT}
+      HOST_OS: ${HOST_OS:-linux}
+      DB_HOST: mariadb
+      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      DB_ROOT_USERNAME: ${DB_ROOT_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      FRAPPE_BRANCH: ${FRAPPE_BRANCH}
+      BOOTSTRAP: ${BOOTSTRAP:-1}
+      # Read from the shell first, then .env -- so the token can live in the
+      # engineer's profile and need not be repeated per project.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    ports:
+      # Defaults to 127.0.0.1: this bench runs with developer_mode on, which
+      # means Server Scripts can execute arbitrary Python. Do not expose it to
+      # the office network by accident. Change BIND_HOST if you must.
+      - "${BIND_HOST:-127.0.0.1}:${WEB_PORT}:8000"
+      - "${BIND_HOST:-127.0.0.1}:${SOCKETIO_PORT}:9000"
+      - "${BIND_HOST:-127.0.0.1}:${FILE_WATCHER_PORT}:6787"
+    volumes:
+      # ./workspace IS the bench. Mounting at /home/frappe/frappe-bench rather
+      # than over /home/frappe keeps .nvm, .cache and .bashrc from the image --
+      # NVM_DIR points inside the home directory, so shadowing it breaks Node.
+      - ./workspace:/home/frappe/frappe-bench
+      # Mounted outside the bench: read-only, and never confused with the
+      # sites/apps.json that bench writes for itself.
+      - ./apps.json:/opt/apps.json:ro
+      # Caches are shared across projects: the second project downloads nothing.
+      - pip-cache:/home/frappe/.cache/pip
+      - yarn-cache:/home/frappe/.cache/yarn
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/method/ping || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # The first boot clones and builds assets. This is not slack.
+      start_period: 1200s
+    stdin_open: true
+    tty: true
+    init: true
+    restart: unless-stopped
+
+  mariadb:
+    image: mariadb:11.4
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      # Frappe still creates compressed tables; MariaDB 10.6+ refuses them
+      # read-write without this flag.
+      - --skip-innodb-read-only-compressed
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${DB_PORT}:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  mariadb-data:
+  # Fixed names, so they are shared across projects.
+  pip-cache:
+    name: bizops-bench-pip-cache
+  yarn-cache:
+    name: bizops-bench-yarn-cache
